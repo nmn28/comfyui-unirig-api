@@ -1,0 +1,25 @@
+{
+  "1": {
+    "class_type": "UniRigLoadMesh",
+    "inputs": {
+      "source_folder": "input",
+      "file_path": "{{mesh_url}}"
+    }
+  },
+  "2": {
+    "class_type": "UniRigLoadModel",
+    "inputs": {
+      "cache_to_gpu": false
+    }
+  },
+  "3": {
+    "class_type": "UniRigAutoRig",
+    "inputs": {
+      "trimesh": ["1", 0],
+      "model": ["2", 0],
+      "skeleton_template": "{{skeleton_template|default:mixamo}}",
+      "fbx_name": "{{output_name|default:}}",
+      "target_face_count": 50000
+    }
+  }
+}

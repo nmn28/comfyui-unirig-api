@@ -1,0 +1,19 @@
+{
+  "1": {
+    "class_type": "UniRigLoadRiggedMesh",
+    "inputs": {
+      "source_folder": "output",
+      "file_name": "{{rigged_fbx_url}}",
+      "load_all_animations": false
+    }
+  },
+  "2": {
+    "class_type": "UniRigApplyAnimation",
+    "inputs": {
+      "model_fbx_path": ["1", 0],
+      "animation_type": "mixamo",
+      "animation_file": "{{animation_url}}",
+      "output_name": "{{output_name|default:}}"
+    }
+  }
+}

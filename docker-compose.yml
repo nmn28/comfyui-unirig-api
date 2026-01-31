@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  comfyui-unirig-api:
+    build: .
+    ports:
+      - "3000:3000"   # API
+      - "8188:8188"   # ComfyUI (for debugging)
+    volumes:
+      # Mount output directory for easy access to generated files
+      - ./output:/opt/ComfyUI/output
+      # Mount input directory for local testing
+      - ./input:/opt/ComfyUI/input
+    environment:
+      # S3 credentials (optional, for S3 URL support)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
