@@ -1,24 +1,5 @@
 # ComfyUI-UniRig API Manifest
-# Configures startup behavior and dependencies
-
-# Custom nodes to install (already in Dockerfile, but listed for reference)
-custom_nodes:
-  - url: https://github.com/PozzettiAndrea/ComfyUI-UniRig
-    commit: main
-
-# Models are auto-downloaded by UniRig on first use
-# No need to specify here
-
-# Environment configuration
-env:
-  # Enable S3 URL support for fetching meshes and animations
-  COMFYUI_ALLOW_REMOTE_FILES: "true"
-
-  # Cache settings - keep downloaded files for reuse
-  LRU_CACHE_SIZE_GB: "10"
-
-# Warmup prompt - pre-loads UniRig models on startup
-# This prevents cold start on first request
-warmup:
-  enabled: true
-  prompt_file: /opt/ComfyUI/custom_nodes/ComfyUI-UniRig/workflows/rig_human_with_texture.json
+# Models to download (none needed - UniRig downloads on first use)
+models:
+  before_start: []
+  after_start: []
