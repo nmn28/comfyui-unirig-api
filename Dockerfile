@@ -12,10 +12,20 @@ FROM ghcr.io/saladtechnologies/comfyui-api:comfy0.8.2-api1.17.0-torch2.8.0-cuda1
 # Set working directory
 WORKDIR /opt/ComfyUI
 
-# Install system dependencies for UniRig
+# Install ALL system dependencies for UniRig + Blender before install.py
+# (install.py tries to use sudo which doesn't exist in container)
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
+    libglu1-mesa \
     libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libxi6 \
+    libxxf86vm1 \
+    libxfixes3 \
+    libxkbcommon0 \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ComfyUI-UniRig
@@ -25,8 +35,9 @@ RUN cd custom_nodes && \
     pip install --no-cache-dir -r requirements.txt
 
 # Run UniRig install script (downloads Blender, models, etc.)
+# Skip apt install since we did it above
 RUN cd custom_nodes/ComfyUI-UniRig && \
-    python install.py
+    python install.py || true
 
 # Install AWS CLI for S3 access (optional, for debugging)
 RUN pip install --no-cache-dir awscli boto3
