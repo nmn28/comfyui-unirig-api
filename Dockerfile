@@ -7,7 +7,7 @@
 # Run:
 #   docker run --gpus all -p 3000:3000 -p 8188:8188 comfyui-unirig-api
 
-FROM ghcr.io/saladtechnologies/comfyui-api:comfy0.7.0-api1.17.0-torch2.8.0-cuda12.8-runtime
+FROM ghcr.io/saladtechnologies/comfyui-api:comfy0.8.2-api1.17.0-torch2.8.0-cuda12.8-runtime
 
 # Set working directory
 WORKDIR /opt/ComfyUI
