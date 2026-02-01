@@ -3,7 +3,8 @@
  * POST /workflow/rig-avatar
  *
  * Takes a mesh URL (GLB from Meshy/Tripo) and returns a rigged FBX.
- * This is the slow operation (~15-30 seconds) - only call once per avatar.
+ * Uses MIA (Make-It-Animatable) for fast humanoid rigging (<1 second).
+ * Output is Mixamo-compatible skeleton ready for Mixamo animations.
  */
 
 import { z } from "zod";
@@ -26,23 +27,33 @@ interface Workflow {
 
 const RequestSchema = z.object({
   mesh_url: z.string().describe("URL to GLB/OBJ/FBX mesh file"),
-  skeleton_template: z
-    .enum(["mixamo", "articulationxl"])
-    .optional()
-    .default("mixamo")
-    .describe("Skeleton type: mixamo for humanoids, articulationxl for any object"),
   output_name: z
     .string()
     .optional()
-    .default(() => `rigged_${Date.now()}`)
+    .default(() => `rigged_mia_${Date.now()}`)
     .describe("Custom output filename (without extension)"),
+  no_fingers: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("Merge finger weights to hand bone (true) or keep separate finger bones (false)"),
+  use_normal: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("Use surface normals for better weights on overlapping limbs (slower)"),
+  reset_to_rest: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe("Transform to T-pose rest position (required for Mixamo animations)"),
 });
 
 type InputType = z.infer<typeof RequestSchema>;
 
 function generateWorkflow(input: InputType): ComfyPrompt {
   return {
-    // Node 1: Load mesh from input folder
+    // Node 1: Load mesh from URL (comfyui-api preprocessor downloads it)
     "1": {
       inputs: {
         source_folder: "input",
@@ -53,30 +64,31 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         title: "Load Mesh",
       },
     },
-    // Node 2: Load UniRig models (skeleton + skinning)
+    // Node 2: Load MIA models (fast humanoid rigging)
     "2": {
       inputs: {
         cache_to_gpu: true,
       },
-      class_type: "UniRigLoadModel",
+      class_type: "MIALoadModel",
       _meta: {
-        title: "Load UniRig Model",
+        title: "Load MIA Model",
       },
     },
-    // Node 3: Auto-rig (extracts skeleton, applies skinning, exports FBX)
+    // Node 3: MIA Auto-rig (outputs Mixamo-compatible FBX)
     "3": {
       inputs: {
         trimesh: ["1", 0],
         model: ["2", 0],
-        skeleton_template: input.skeleton_template,
         fbx_name: input.output_name,
-        target_face_count: 50000,
+        no_fingers: input.no_fingers,
+        use_normal: input.use_normal,
+        reset_to_rest: input.reset_to_rest,
         // Required by comfyui-api to detect output nodes
         filename_prefix: input.output_name,
       },
-      class_type: "UniRigAutoRig",
+      class_type: "MIAAutoRig",
       _meta: {
-        title: "Auto Rig",
+        title: "MIA Auto Rig",
       },
     },
   };
@@ -85,8 +97,9 @@ function generateWorkflow(input: InputType): ComfyPrompt {
 const workflow: Workflow = {
   RequestSchema,
   generateWorkflow,
-  summary: "Rig Avatar",
-  description: "Takes a mesh URL and returns a rigged FBX with Mixamo skeleton",
+  summary: "Rig Avatar (MIA)",
+  description:
+    "Fast humanoid rigging using MIA. Takes a mesh URL, returns Mixamo-compatible FBX ready for animations.",
 };
 
 export default workflow;
