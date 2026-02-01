@@ -39,15 +39,16 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ComfyUI-UniRig from our fork (with OUTPUT_NODE fix)
+# Install BOTH requirements files (top-level AND nested unirig requirements)
 RUN cd custom_nodes && \
     git clone https://github.com/nmn28/ComfyUI-UniRig.git && \
     cd ComfyUI-UniRig && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir -r nodes/unirig/requirements.txt
 
-# Install python-box (for YAML config loading) and bpy (Blender Python)
-# Install python-box, bpy, lightning, and torch-geometric packages
+# Install torch-geometric packages (required for ML inference)
 # The -f flag points to PyG wheel index for torch 2.8.0 + CUDA 12.8
-RUN pip install --no-cache-dir python-box bpy lightning \
+RUN pip install --no-cache-dir \
     torch-cluster torch-scatter torch-sparse torch-geometric \
     -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
 
