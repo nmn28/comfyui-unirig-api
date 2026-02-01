@@ -56,7 +56,7 @@ function generateWorkflow(input: InputType): ComfyPrompt {
     // Node 2: Load UniRig models (skeleton + skinning)
     "2": {
       inputs: {
-        cache_to_gpu: false,
+        cache_to_gpu: true,
       },
       class_type: "UniRigLoadModel",
       _meta: {
