@@ -71,6 +71,8 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         skeleton_template: input.skeleton_template,
         fbx_name: input.output_name,
         target_face_count: 50000,
+        // Required by comfyui-api to detect output nodes
+        filename_prefix: input.output_name,
       },
       class_type: "UniRigAutoRig",
       _meta: {

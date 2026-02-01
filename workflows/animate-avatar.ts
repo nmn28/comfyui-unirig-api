@@ -49,6 +49,8 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         animation_type: "mixamo",
         animation_file: input.animation_file,
         output_name: input.output_name,
+        // Required by comfyui-api to detect output nodes
+        filename_prefix: input.output_name,
       },
       class_type: "UniRigApplyAnimation",
       _meta: {
