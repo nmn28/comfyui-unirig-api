@@ -74,6 +74,17 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         title: "Auto Rig",
       },
     },
+    "4": {
+      inputs: {
+        rigged_mesh: ["3", 0],
+        filename_prefix: input.output_name,
+        format: "fbx",
+      },
+      class_type: "UniRigSaveMesh",
+      _meta: {
+        title: "Save Mesh",
+      },
+    },
   };
 }
 

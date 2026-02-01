@@ -65,6 +65,17 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         title: "Apply Animation",
       },
     },
+    "3": {
+      inputs: {
+        rigged_mesh: ["2", 0],
+        filename_prefix: input.output_name,
+        format: "fbx",
+      },
+      class_type: "UniRigSaveMesh",
+      _meta: {
+        title: "Save Animated Mesh",
+      },
+    },
   };
 }
 
