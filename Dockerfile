@@ -45,7 +45,11 @@ RUN cd custom_nodes && \
     pip install --no-cache-dir -r requirements.txt
 
 # Install python-box (for YAML config loading) and bpy (Blender Python)
-RUN pip install --no-cache-dir python-box bpy lightning
+# Install python-box, bpy, lightning, and torch-geometric packages
+# The -f flag points to PyG wheel index for torch 2.8.0 + CUDA 12.8
+RUN pip install --no-cache-dir python-box bpy lightning \
+    torch-cluster torch-scatter torch-sparse torch-geometric \
+    -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
 
 # Run UniRig install script (downloads Blender, models, etc.)
 RUN cd custom_nodes/ComfyUI-UniRig && \
