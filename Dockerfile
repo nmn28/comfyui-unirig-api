@@ -39,13 +39,19 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ComfyUI-UniRig from our fork (with OUTPUT_NODE fix)
-# Install BOTH requirements files, excluding flash_attn (needs CUDA compilation)
-# UniRig works fine without flash_attn - uses standard PyTorch attention instead
+# Install BOTH requirements files, excluding flash_attn (installed separately below)
 RUN cd custom_nodes && \
     git clone https://github.com/nmn28/ComfyUI-UniRig.git && \
     cd ComfyUI-UniRig && \
     pip install --no-cache-dir -r requirements.txt && \
     grep -v flash_attn nodes/unirig/requirements.txt | pip install --no-cache-dir -r /dev/stdin
+
+# Install flash_attn from source (requires ninja for fast compilation)
+# --no-build-isolation uses the already-installed torch instead of isolated env
+# Falls back gracefully if build fails - UniRig works without it
+RUN pip install --no-cache-dir ninja && \
+    CUDA_HOME=/usr/local/cuda MAX_JOBS=4 pip install flash-attn --no-build-isolation || \
+    echo "flash_attn build failed - continuing without it (UniRig will use standard attention)"
 
 # Install torch-geometric packages (required for ML inference)
 # The -f flag points to PyG wheel index for torch 2.8.0 + CUDA 12.8
