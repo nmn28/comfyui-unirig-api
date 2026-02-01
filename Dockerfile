@@ -44,6 +44,9 @@ RUN cd custom_nodes && \
     cd ComfyUI-UniRig && \
     pip install --no-cache-dir -r requirements.txt
 
+# Install python-box (for YAML config loading) and bpy (Blender Python)
+RUN pip install --no-cache-dir python-box bpy
+
 # Run UniRig install script (downloads Blender, models, etc.)
 RUN cd custom_nodes/ComfyUI-UniRig && \
     python install.py || true
