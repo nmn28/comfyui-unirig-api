@@ -42,6 +42,7 @@ type InputType = z.infer<typeof RequestSchema>;
 
 function generateWorkflow(input: InputType): ComfyPrompt {
   return {
+    // Node 1: Load mesh from input folder
     "1": {
       inputs: {
         source_folder: "input",
@@ -52,6 +53,7 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         title: "Load Mesh",
       },
     },
+    // Node 2: Load UniRig models (skeleton + skinning)
     "2": {
       inputs: {
         cache_to_gpu: false,
@@ -61,6 +63,7 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         title: "Load UniRig Model",
       },
     },
+    // Node 3: Auto-rig (extracts skeleton, applies skinning, exports FBX)
     "3": {
       inputs: {
         trimesh: ["1", 0],
@@ -72,17 +75,6 @@ function generateWorkflow(input: InputType): ComfyPrompt {
       class_type: "UniRigAutoRig",
       _meta: {
         title: "Auto Rig",
-      },
-    },
-    "4": {
-      inputs: {
-        rigged_mesh: ["3", 0],
-        filename_prefix: input.output_name,
-        format: "fbx",
-      },
-      class_type: "UniRigSaveMesh",
-      _meta: {
-        title: "Save Mesh",
       },
     },
   };

@@ -25,12 +25,12 @@ interface Workflow {
 }
 
 const RequestSchema = z.object({
-  rigged_fbx_url: z
+  rigged_fbx_path: z
     .string()
-    .describe("URL to rigged FBX file (from /workflow/rig-avatar)"),
-  animation_url: z
+    .describe("Path to rigged FBX file (from /workflow/rig-avatar output)"),
+  animation_file: z
     .string()
-    .describe("URL to animation FBX file (Mixamo format)"),
+    .describe("Animation filename (must exist in input/animation_templates/mixamo/)"),
   output_name: z
     .string()
     .optional()
@@ -42,38 +42,17 @@ type InputType = z.infer<typeof RequestSchema>;
 
 function generateWorkflow(input: InputType): ComfyPrompt {
   return {
+    // Node 1: Apply animation to rigged model
     "1": {
       inputs: {
-        source_folder: "output",
-        file_name: input.rigged_fbx_url,
-        load_all_animations: false,
-      },
-      class_type: "UniRigLoadRiggedMesh",
-      _meta: {
-        title: "Load Rigged Mesh",
-      },
-    },
-    "2": {
-      inputs: {
-        model_fbx_path: ["1", 0],
+        model_fbx_path: input.rigged_fbx_path,
         animation_type: "mixamo",
-        animation_file: input.animation_url,
+        animation_file: input.animation_file,
         output_name: input.output_name,
       },
       class_type: "UniRigApplyAnimation",
       _meta: {
         title: "Apply Animation",
-      },
-    },
-    "3": {
-      inputs: {
-        rigged_mesh: ["2", 0],
-        filename_prefix: input.output_name,
-        format: "fbx",
-      },
-      class_type: "UniRigSaveMesh",
-      _meta: {
-        title: "Save Animated Mesh",
       },
     },
   };
