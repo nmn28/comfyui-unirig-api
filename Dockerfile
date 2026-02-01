@@ -59,6 +59,9 @@ RUN pip install --no-cache-dir \
     torch-cluster torch-scatter torch-sparse torch-geometric \
     -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
 
+# Install spconv for sparse convolutions (used in point cloud processing)
+RUN pip install --no-cache-dir spconv-cu120
+
 # Run UniRig install script (downloads Blender, models, etc.)
 RUN cd custom_nodes/ComfyUI-UniRig && \
     python install.py || true
