@@ -47,6 +47,11 @@ const RequestSchema = z.object({
     .optional()
     .default(true)
     .describe("Transform to T-pose rest position (required for Mixamo animations)"),
+  separate_textures: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe("Export geometry-only GLB (2-3MB) and return textures separately for S3 upload. Recommended for production."),
 });
 
 type InputType = z.infer<typeof RequestSchema>;
@@ -74,7 +79,7 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         title: "Load MIA Model",
       },
     },
-    // Node 3: MIA Auto-rig (outputs Mixamo-compatible FBX)
+    // Node 3: MIA Auto-rig (outputs Mixamo-compatible FBX + GLB + textures)
     "3": {
       inputs: {
         trimesh: ["1", 0],
@@ -83,6 +88,7 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         no_fingers: input.no_fingers,
         use_normal: input.use_normal,
         reset_to_rest: input.reset_to_rest,
+        separate_textures: input.separate_textures,
         // Required by comfyui-api to detect output nodes
         filename_prefix: input.output_name,
       },
