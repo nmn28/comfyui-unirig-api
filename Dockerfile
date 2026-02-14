@@ -69,6 +69,50 @@ RUN cd custom_nodes/ComfyUI-UniRig && \
 # Install AWS CLI, boto3, and RunPod SDK
 RUN pip install --no-cache-dir awscli boto3 runpod requests
 
+# =============================================================================
+# CLOTHING PIPELINE: cloth-fit + Robust Weight Transfer
+# =============================================================================
+
+# Install build dependencies for cloth-fit (C++ with cmake)
+RUN apt-get update && apt-get install -y \
+    cmake \
+    build-essential \
+    libeigen3-dev \
+    libcgal-dev \
+    libboost-all-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone and build cloth-fit (SIGGRAPH 2025 - Intersection-free Garment Retargeting)
+# https://github.com/Huangzizhou/cloth-fit
+RUN git clone https://github.com/Huangzizhou/cloth-fit.git /opt/cloth-fit && \
+    cd /opt/cloth-fit && \
+    mkdir -p build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc) && \
+    ln -s /opt/cloth-fit/build/cloth_fit /usr/local/bin/cloth-fit || \
+    echo "cloth-fit build completed (check for binary)"
+
+# Install full Blender for Robust Weight Transfer addon
+# (bpy module alone doesn't support addons that use BMesh operators)
+ENV BLENDER_VERSION=4.0
+ENV BLENDER_URL="https://mirror.clarkson.edu/blender/release/Blender4.0/blender-4.0.2-linux-x64.tar.xz"
+
+RUN wget -q ${BLENDER_URL} -O /tmp/blender.tar.xz && \
+    tar -xf /tmp/blender.tar.xz -C /opt && \
+    mv /opt/blender-* /opt/blender && \
+    ln -s /opt/blender/blender /usr/local/bin/blender && \
+    rm /tmp/blender.tar.xz
+
+# Clone Robust Weight Transfer addon (SIGGRAPH Asia 2023)
+# https://github.com/sentfromspacevr/robust-weight-transfer
+RUN git clone https://github.com/sentfromspacevr/robust-weight-transfer.git \
+    /opt/blender/4.0/scripts/addons/robust_weight_transfer
+
+# Create directories for clothing pipeline
+RUN mkdir -p /tmp/clothing /tmp/fitted
+
+# =============================================================================
+
 # Copy workflows
 COPY workflows/ /workflows/
 

@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 # S3 configuration from environment
 S3_BUCKET = os.environ.get("S3_BUCKET", "endure-media")
 S3_TEXTURES_PREFIX = os.environ.get("S3_TEXTURES_PREFIX", "avatar-textures/")
+S3_CLOTHING_PREFIX = os.environ.get("S3_CLOTHING_PREFIX", "avatars/")
 AWS_REGION = os.environ.get("AWS_REGION", "us-west-1")
 
 # Initialize S3 client (will use IAM role or env credentials)
@@ -115,6 +116,51 @@ def upload_textures_to_s3(textures_json: str, model_id: str) -> list:
     return uploaded
 
 
+def upload_clothing_to_s3(local_path: str, user_id: str, garment_id: str) -> str:
+    """
+    Upload fitted/rigged clothing GLB to S3.
+
+    Args:
+        local_path: Path to local GLB file
+        user_id: User identifier for S3 path
+        garment_id: Garment identifier for S3 path
+
+    Returns:
+        S3 URL of uploaded file
+    """
+    if not os.path.exists(local_path):
+        print(f"[Handler] Clothing file not found: {local_path}")
+        return ""
+
+    try:
+        client = get_s3_client()
+
+        # Generate S3 key: avatars/{user_id}/clothing/{garment_id}.glb
+        s3_key = f"{S3_CLOTHING_PREFIX}{user_id}/clothing/{garment_id}.glb"
+
+        # Read file
+        with open(local_path, 'rb') as f:
+            file_data = f.read()
+
+        # Upload to S3
+        client.put_object(
+            Bucket=S3_BUCKET,
+            Key=s3_key,
+            Body=file_data,
+            ContentType='model/gltf-binary',
+        )
+
+        # Generate URL
+        s3_url = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
+
+        print(f"[Handler] Uploaded clothing: {s3_key} ({len(file_data)} bytes)")
+        return s3_url
+
+    except Exception as e:
+        print(f"[Handler] Failed to upload clothing: {e}")
+        return ""
+
+
 def handler(job):
     """
     RunPod handler function.
@@ -150,9 +196,14 @@ def handler(job):
     endpoint = job_input.get("endpoint", "/prompt")
     body = job_input.get("body", job_input)
 
-    # Extract model_id for S3 path (use output_name or generate one)
+    # Extract identifiers for S3 paths
     input_data = body.get("input", {})
     model_id = input_data.get("output_name", f"model_{int(time.time())}")
+    user_id = input_data.get("user_id", "anonymous")
+    garment_id = input_data.get("garment_id", model_id)
+
+    # Check if this is a clothing workflow
+    is_clothing_workflow = "fit-clothing" in endpoint
 
     # Make request to local comfyui-api
     try:
@@ -207,6 +258,40 @@ def handler(job):
                         for node_id in api_response['outputs']:
                             if isinstance(api_response['outputs'][node_id], dict):
                                 api_response['outputs'][node_id].pop('textures_json', None)
+
+            # Handle clothing workflow outputs - upload GLB to S3
+            if is_clothing_workflow and isinstance(api_response, dict):
+                clothing_url = None
+
+                # Find clothing output path in response
+                if 'outputs' in api_response and isinstance(api_response['outputs'], dict):
+                    for node_id, node_output in api_response['outputs'].items():
+                        # TransferSkinWeights returns (rigged_garment_path,)
+                        # CombineAvatarClothing returns (combined_path,)
+                        if isinstance(node_output, list) and len(node_output) > 0:
+                            output_path = node_output[0]
+                            if isinstance(output_path, str) and output_path.endswith('.glb'):
+                                # Upload to S3
+                                clothing_url = upload_clothing_to_s3(output_path, user_id, garment_id)
+                                if clothing_url:
+                                    print(f"[Handler] Clothing uploaded: {clothing_url}")
+                                break
+                        elif isinstance(node_output, dict):
+                            # Check for path keys
+                            for key in ['rigged_garment_path', 'combined_path', 'output_path']:
+                                if key in node_output:
+                                    output_path = node_output[key]
+                                    if isinstance(output_path, str) and output_path.endswith('.glb'):
+                                        clothing_url = upload_clothing_to_s3(output_path, user_id, garment_id)
+                                        if clothing_url:
+                                            print(f"[Handler] Clothing uploaded: {clothing_url}")
+                                        break
+
+                # Add clothing URL to response
+                if clothing_url:
+                    api_response['clothing_url'] = clothing_url
+                    api_response['user_id'] = user_id
+                    api_response['garment_id'] = garment_id
 
             result["response"] = api_response
         else:
