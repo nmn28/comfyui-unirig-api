@@ -73,24 +73,39 @@ RUN pip install --no-cache-dir awscli boto3 runpod requests
 # CLOTHING PIPELINE: cloth-fit + Robust Weight Transfer
 # =============================================================================
 
-# Install build dependencies for cloth-fit (C++ with cmake)
+# Install build dependencies for cloth-fit (PolyFEM-based, C++ with cmake)
+# cloth-fit requires: CMake 3.25+, Eigen3, TBB, Boost, OpenVDB, and many others
+# The build is complex - it will fetch most dependencies via CMake FetchContent
 RUN apt-get update && apt-get install -y \
     cmake \
     build-essential \
+    git \
     libeigen3-dev \
-    libcgal-dev \
     libboost-all-dev \
+    libtbb-dev \
+    libopenvdb-dev \
+    libspdlog-dev \
+    libgmp-dev \
+    libmpfr-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Clone and build cloth-fit (SIGGRAPH 2025 - Intersection-free Garment Retargeting)
 # https://github.com/Huangzizhou/cloth-fit
-RUN git clone https://github.com/Huangzizhou/cloth-fit.git /opt/cloth-fit && \
+# Note: This is based on PolyFEM, the binary is called PolyFEM_bin
+# Build may take 10-20 minutes due to FetchContent dependencies
+RUN git clone --recursive https://github.com/Huangzizhou/cloth-fit.git /opt/cloth-fit && \
     cd /opt/cloth-fit && \
     mkdir -p build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release \
+             -DPOLYFEM_WITH_TESTS=OFF \
+             -DPOLYFEM_WITH_CUDA=OFF && \
     make -j$(nproc) && \
-    ln -s /opt/cloth-fit/build/cloth_fit /usr/local/bin/cloth-fit || \
-    echo "cloth-fit build completed (check for binary)"
+    ln -s /opt/cloth-fit/build/PolyFEM_bin /usr/local/bin/cloth-fit || \
+    echo "cloth-fit build completed (check /opt/cloth-fit/build/PolyFEM_bin)"
+
+# Copy cloth-fit example data for reference skeleton templates
+RUN mkdir -p /opt/cloth-fit-templates && \
+    cp -r /opt/cloth-fit/json-specs /opt/cloth-fit-templates/ || true
 
 # Install full Blender for Robust Weight Transfer addon
 # (bpy module alone doesn't support addons that use BMesh operators)
