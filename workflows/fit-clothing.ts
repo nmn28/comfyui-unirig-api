@@ -30,10 +30,15 @@ interface Workflow {
 
 const RequestSchema = z.object({
   avatar_url: z.string().describe("URL to rigged avatar GLB (from rig-avatar workflow)"),
-  clothing_url: z.string().describe("URL to clothing mesh OBJ from S3 library"),
-  reference_skeleton_url: z
-    .string()
-    .describe("URL to reference skeleton OBJ that the clothing was fitted to"),
+  clothing_url: z.string().describe("URL to clothing mesh (OBJ/GLB) - from S3 library or AI generation"),
+  clothing_category: z
+    .enum(["shoes", "top", "bottom", "hat", "gloves", "fullbody", "accessory"])
+    .describe("Clothing category - determines placement on body"),
+  is_ai_generated: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe("If true, uses GarmentPlacement to position raw AI mesh on body first"),
   output_name: z
     .string()
     .optional()
@@ -44,6 +49,14 @@ const RequestSchema = z.object({
     .optional()
     .default(false)
     .describe("If true, returns combined avatar+clothing GLB. If false, returns clothing-only GLB."),
+  user_id: z
+    .string()
+    .optional()
+    .describe("User ID for S3 output path"),
+  garment_id: z
+    .string()
+    .optional()
+    .describe("Garment ID for S3 output path and caching"),
 });
 
 type InputType = z.infer<typeof RequestSchema>;
@@ -71,8 +84,7 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         title: "Load MIA Model",
       },
     },
-    // Node 3: Re-rig avatar to get skeleton dict (if not already available)
-    // In practice, we'd pass the skeleton from the original rig, but this ensures we have it
+    // Node 3: Re-rig avatar to get skeleton dict
     "3": {
       inputs: {
         trimesh: ["1", 0],
@@ -88,7 +100,7 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         title: "Extract Avatar Skeleton",
       },
     },
-    // Node 4: Load clothing mesh from S3 library
+    // Node 4: Load clothing mesh
     "4": {
       inputs: {
         clothing_url: input.clothing_url,
@@ -98,35 +110,99 @@ function generateWorkflow(input: InputType): ComfyPrompt {
         title: "Load Clothing Mesh",
       },
     },
-    // Node 5: Load reference skeleton (the body the clothing was originally fitted to)
-    "5": {
-      inputs: {
-        source_folder: "input",
-        file_path: input.reference_skeleton_url,
-      },
-      class_type: "UniRigLoadMesh",
+  };
+
+  // For AI-generated clothing, use GarmentPlacement to position on reference body
+  if (input.is_ai_generated) {
+    // Node 5: Load reference mannequin (the body template garments are positioned relative to)
+    nodes["5"] = {
+      inputs: {},
+      class_type: "LoadReferenceMannequin",
       _meta: {
-        title: "Load Reference Skeleton",
+        title: "Load Reference Mannequin",
       },
-    },
-    // Node 6: Cloth-fit (deform clothing to fit target avatar)
-    "6": {
+    };
+    // Node 6: Position AI mesh on reference body based on category
+    nodes["6"] = {
       inputs: {
-        source_garment: ["4", 0],
-        source_skeleton: ["5", 0], // Reference skeleton
+        raw_mesh: ["4", 0],
+        category: input.clothing_category,
+        auto_scale: true,
+      },
+      class_type: "GarmentPlacement",
+      _meta: {
+        title: "Place Garment on Body",
+      },
+    };
+    // Node 7: Cloth-fit (deform positioned garment to fit target avatar)
+    nodes["7"] = {
+      inputs: {
+        source_garment: ["6", 0],     // Positioned mesh from GarmentPlacement
+        source_skeleton: ["6", 1],     // Reference skeleton from GarmentPlacement
         target_mesh: ["1", 0],
-        target_skeleton: ["3", 1], // Skeleton from MIAAutoRig output
+        target_skeleton: ["3", 1],     // Skeleton from MIAAutoRig output
         output_name: `${input.output_name}_fitted`,
       },
       class_type: "ClothFitGarment",
       _meta: {
         title: "Cloth-Fit Garment",
       },
-    },
-    // Node 7: Transfer skin weights from avatar to fitted garment
-    "7": {
+    };
+    // Node 8: Transfer skin weights from avatar to fitted garment
+    nodes["8"] = {
       inputs: {
         rigged_avatar_path: ["3", 0], // FBX path from MIAAutoRig
+        fitted_garment: ["7", 0],
+        output_name: input.output_name,
+      },
+      class_type: "TransferSkinWeights",
+      _meta: {
+        title: "Transfer Skin Weights",
+      },
+    };
+
+    // Optionally combine avatar + clothing
+    if (input.combine_with_avatar) {
+      nodes["9"] = {
+        inputs: {
+          avatar_path: ["3", 0],
+          clothing_path: ["8", 0],
+          output_name: `${input.output_name}_combined`,
+        },
+        class_type: "CombineAvatarClothing",
+        _meta: {
+          title: "Combine Avatar + Clothing",
+        },
+      };
+    }
+  } else {
+    // Pre-positioned library clothing - use reference mannequin directly
+    // Node 5: Load reference mannequin
+    nodes["5"] = {
+      inputs: {},
+      class_type: "LoadReferenceMannequin",
+      _meta: {
+        title: "Load Reference Mannequin",
+      },
+    };
+    // Node 6: Cloth-fit (garment already positioned on mannequin)
+    nodes["6"] = {
+      inputs: {
+        source_garment: ["4", 0],
+        source_skeleton: ["5", 1],    // Reference skeleton from LoadReferenceMannequin
+        target_mesh: ["1", 0],
+        target_skeleton: ["3", 1],
+        output_name: `${input.output_name}_fitted`,
+      },
+      class_type: "ClothFitGarment",
+      _meta: {
+        title: "Cloth-Fit Garment",
+      },
+    };
+    // Node 7: Transfer skin weights
+    nodes["7"] = {
+      inputs: {
+        rigged_avatar_path: ["3", 0],
         fitted_garment: ["6", 0],
         output_name: input.output_name,
       },
@@ -134,22 +210,22 @@ function generateWorkflow(input: InputType): ComfyPrompt {
       _meta: {
         title: "Transfer Skin Weights",
       },
-    },
-  };
-
-  // Optionally combine avatar + clothing
-  if (input.combine_with_avatar) {
-    nodes["8"] = {
-      inputs: {
-        avatar_path: ["3", 0], // Avatar GLB path
-        clothing_path: ["7", 0], // Rigged clothing path
-        output_name: `${input.output_name}_combined`,
-      },
-      class_type: "CombineAvatarClothing",
-      _meta: {
-        title: "Combine Avatar + Clothing",
-      },
     };
+
+    // Optionally combine avatar + clothing
+    if (input.combine_with_avatar) {
+      nodes["8"] = {
+        inputs: {
+          avatar_path: ["3", 0],
+          clothing_path: ["7", 0],
+          output_name: `${input.output_name}_combined`,
+        },
+        class_type: "CombineAvatarClothing",
+        _meta: {
+          title: "Combine Avatar + Clothing",
+        },
+      };
+    }
   }
 
   return nodes;
