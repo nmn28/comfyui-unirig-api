@@ -74,34 +74,58 @@ RUN pip install --no-cache-dir awscli boto3 runpod requests
 # =============================================================================
 
 # Install build dependencies for cloth-fit (PolyFEM-based, C++ with cmake)
-# cloth-fit requires: CMake 3.25+, Eigen3, TBB, Boost, OpenVDB, and many others
-# The build is complex - it will fetch most dependencies via CMake FetchContent
+# cloth-fit requires: CMake 3.25+, Eigen3, TBB, Boost >= 1.80, OpenVDB, and many others
 RUN apt-get update && apt-get install -y \
     cmake \
     build-essential \
     git \
     libeigen3-dev \
-    libboost-all-dev \
     libtbb-dev \
-    libopenvdb-dev \
     libspdlog-dev \
     libgmp-dev \
     libmpfr-dev \
+    libblosc-dev \
+    libjemalloc-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Boost 1.83 from source (Ubuntu 22.04 only has 1.74, OpenVDB needs >= 1.80)
+# This adds ~5 min to build time but ensures compatibility
+RUN wget -q https://boostorg.jfrog.io/artifactory/main/release/1.83.0/source/boost_1_83_0.tar.gz && \
+    tar -xzf boost_1_83_0.tar.gz && \
+    cd boost_1_83_0 && \
+    ./bootstrap.sh --prefix=/usr/local --with-libraries=iostreams,system,filesystem,thread,regex && \
+    ./b2 install -j$(nproc) && \
+    cd .. && rm -rf boost_1_83_0 boost_1_83_0.tar.gz && \
+    ldconfig
+
+# Install OpenVDB from source (needs Boost 1.80+)
+# Using version 11.0.0 which is well-tested
+RUN git clone --depth 1 --branch v11.0.0 https://github.com/AcademySoftwareFoundation/openvdb.git /tmp/openvdb && \
+    cd /tmp/openvdb && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release \
+             -DOPENVDB_BUILD_PYTHON_MODULE=OFF \
+             -DOPENVDB_BUILD_BINARIES=OFF \
+             -DUSE_BLOSC=ON && \
+    make -j$(nproc) && make install && \
+    cd / && rm -rf /tmp/openvdb && \
+    ldconfig
 
 # Clone and build cloth-fit (SIGGRAPH 2025 - Intersection-free Garment Retargeting)
 # https://github.com/Huangzizhou/cloth-fit
 # Note: This is based on PolyFEM, the binary is called PolyFEM_bin
-# Build may take 10-20 minutes due to FetchContent dependencies
+# Build may take 15-30 minutes due to FetchContent dependencies
 RUN git clone --recursive https://github.com/Huangzizhou/cloth-fit.git /opt/cloth-fit && \
     cd /opt/cloth-fit && \
     mkdir -p build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release \
              -DPOLYFEM_WITH_TESTS=OFF \
-             -DPOLYFEM_WITH_CUDA=OFF && \
+             -DPOLYFEM_WITH_CUDA=OFF \
+             -DBOOST_ROOT=/usr/local \
+             -DBoost_NO_SYSTEM_PATHS=ON && \
     make -j$(nproc) && \
     ln -s /opt/cloth-fit/build/PolyFEM_bin /usr/local/bin/cloth-fit || \
-    echo "cloth-fit build completed (check /opt/cloth-fit/build/PolyFEM_bin)"
+    echo "cloth-fit build failed - check logs above"
 
 # Copy cloth-fit example data for reference skeleton templates
 RUN mkdir -p /opt/cloth-fit-templates && \
