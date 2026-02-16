@@ -89,13 +89,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Boost 1.83 from source (Ubuntu 22.04 only has 1.74, OpenVDB needs >= 1.80)
-# This adds ~5 min to build time but ensures compatibility
-RUN wget -q https://boostorg.jfrog.io/artifactory/main/release/1.83.0/source/boost_1_83_0.tar.gz && \
-    tar -xzf boost_1_83_0.tar.gz && \
+# Using SourceForge mirror (most reliable)
+RUN wget -q https://sourceforge.net/projects/boost/files/boost/1.83.0/boost_1_83_0.tar.bz2/download -O boost_1_83_0.tar.bz2 && \
+    tar -xjf boost_1_83_0.tar.bz2 && \
     cd boost_1_83_0 && \
     ./bootstrap.sh --prefix=/usr/local --with-libraries=iostreams,system,filesystem,thread,regex && \
     ./b2 install -j$(nproc) && \
-    cd .. && rm -rf boost_1_83_0 boost_1_83_0.tar.gz && \
+    cd .. && rm -rf boost_1_83_0 boost_1_83_0.tar.bz2 && \
     ldconfig
 
 # Install OpenVDB from source (needs Boost 1.80+)
