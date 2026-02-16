@@ -122,7 +122,8 @@ RUN git clone --recursive https://github.com/Huangzizhou/cloth-fit.git /opt/clot
              -DPOLYFEM_WITH_TESTS=OFF \
              -DPOLYFEM_WITH_CUDA=OFF \
              -DBOOST_ROOT=/usr/local \
-             -DBoost_NO_SYSTEM_PATHS=ON && \
+             -DBoost_NO_SYSTEM_PATHS=ON \
+             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && \
     make -j$(nproc) && \
     ln -s /opt/cloth-fit/build/PolyFEM_bin /usr/local/bin/cloth-fit || \
     echo "cloth-fit build failed - check logs above"
