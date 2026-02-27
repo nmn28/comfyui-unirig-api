@@ -23,7 +23,7 @@ WORKDIR /opt/ComfyUI
 COPY --from=api-builder /build/bin/comfyui-api /comfyui-api
 RUN chmod +x /comfyui-api
 
-# Install system dependencies for UniRig + Blender + Draco compression
+# Install system dependencies for UniRig + Blender
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglu1-mesa \
@@ -36,13 +36,7 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 \
     libxkbcommon0 \
     xz-utils \
-    draco \
-    libdraco-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# Set Draco library path for Blender's bpy module (required for GLB compression)
-# The bpy module doesn't bundle Draco, so we point it to the system library
-ENV BLENDER_EXTERN_DRACO_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/libdraco.so
 
 # Install ComfyUI-UniRig from our fork (with OUTPUT_NODE fix)
 # Install BOTH requirements files, excluding flash_attn (installed separately below)
@@ -138,10 +132,10 @@ RUN git clone --recursive https://github.com/Huangzizhou/cloth-fit.git /opt/clot
 RUN mkdir -p /opt/cloth-fit-templates && \
     cp -r /opt/cloth-fit/json-specs /opt/cloth-fit-templates/ || true
 
-# Install full Blender for Robust Weight Transfer addon
-# (bpy module alone doesn't support addons that use BMesh operators)
-ENV BLENDER_VERSION=4.0
-ENV BLENDER_URL="https://mirror.clarkson.edu/blender/release/Blender4.0/blender-4.0.2-linux-x64.tar.xz"
+# Install full Blender 4.2 (matches bpy==4.2 version)
+# Used for: Robust Weight Transfer addon + libextern_draco.so for Draco compression
+ENV BLENDER_VERSION=4.2
+ENV BLENDER_URL="https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz"
 
 RUN wget -q ${BLENDER_URL} -O /tmp/blender.tar.xz && \
     tar -xf /tmp/blender.tar.xz -C /opt && \
@@ -152,7 +146,29 @@ RUN wget -q ${BLENDER_URL} -O /tmp/blender.tar.xz && \
 # Clone Robust Weight Transfer addon (SIGGRAPH Asia 2023)
 # https://github.com/sentfromspacevr/robust-weight-transfer
 RUN git clone https://github.com/sentfromspacevr/robust-weight-transfer.git \
-    /opt/blender/4.0/scripts/addons/robust_weight_transfer
+    /opt/blender/4.2/scripts/addons/robust_weight_transfer
+
+# Copy libextern_draco.so from full Blender to where bpy module can find it
+# The bpy pip package doesn't include Draco - we extract it from the full Blender release
+# This enables ~70-90% smaller GLB files via Draco mesh compression
+RUN DRACO_SRC="/opt/blender/4.2/lib/libextern_draco.so" && \
+    if [ -f "$DRACO_SRC" ]; then \
+        echo "Found Draco library at $DRACO_SRC"; \
+    else \
+        DRACO_SRC=$(find /opt/blender -name "libextern_draco.so" 2>/dev/null | head -1); \
+        echo "Found Draco library at $DRACO_SRC"; \
+    fi && \
+    if [ -n "$DRACO_SRC" ] && [ -f "$DRACO_SRC" ]; then \
+        cp "$DRACO_SRC" /usr/local/lib/libextern_draco.so && \
+        chmod 755 /usr/local/lib/libextern_draco.so && \
+        ldconfig && \
+        echo "Draco library installed to /usr/local/lib/libextern_draco.so"; \
+    else \
+        echo "WARNING: libextern_draco.so not found in Blender installation"; \
+    fi
+
+# Set Draco library path for bpy module
+ENV BLENDER_EXTERN_DRACO_LIBRARY_PATH=/usr/local/lib/libextern_draco.so
 
 # Create directories for clothing pipeline
 RUN mkdir -p /tmp/clothing /tmp/fitted
