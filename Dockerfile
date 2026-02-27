@@ -23,7 +23,7 @@ WORKDIR /opt/ComfyUI
 COPY --from=api-builder /build/bin/comfyui-api /comfyui-api
 RUN chmod +x /comfyui-api
 
-# Install system dependencies for UniRig + Blender
+# Install system dependencies for UniRig + Blender + Draco compression
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglu1-mesa \
@@ -36,7 +36,13 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 \
     libxkbcommon0 \
     xz-utils \
+    draco \
+    libdraco-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Set Draco library path for Blender's bpy module (required for GLB compression)
+# The bpy module doesn't bundle Draco, so we point it to the system library
+ENV BLENDER_EXTERN_DRACO_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/libdraco.so
 
 # Install ComfyUI-UniRig from our fork (with OUTPUT_NODE fix)
 # Install BOTH requirements files, excluding flash_attn (installed separately below)
