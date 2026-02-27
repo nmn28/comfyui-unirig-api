@@ -116,6 +116,103 @@ def upload_textures_to_s3(textures_json: str, model_id: str) -> list:
     return uploaded
 
 
+def upload_rigged_model_to_s3(local_path: str, model_id: str, file_type: str) -> str:
+    """
+    Upload rigged model (GLB or FBX) to S3.
+
+    Args:
+        local_path: Path to local file
+        model_id: Unique identifier for the model (used in S3 path)
+        file_type: File extension (glb or fbx)
+
+    Returns:
+        S3 URL of uploaded file, or empty string on failure
+    """
+    if not local_path or not os.path.exists(local_path):
+        print(f"[Handler] Rigged model file not found: {local_path}")
+        return ""
+
+    try:
+        client = get_s3_client()
+
+        # Generate S3 key: avatars/rigged/{model_id}.{file_type}
+        s3_key = f"avatars/rigged/{model_id}.{file_type}"
+
+        # Read file
+        with open(local_path, 'rb') as f:
+            file_data = f.read()
+
+        # Determine content type
+        content_type = 'model/gltf-binary' if file_type == 'glb' else 'application/octet-stream'
+
+        # Upload to S3
+        client.put_object(
+            Bucket=S3_BUCKET,
+            Key=s3_key,
+            Body=file_data,
+            ContentType=content_type,
+        )
+
+        # Generate URL
+        s3_url = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
+
+        print(f"[Handler] Uploaded rigged model: {s3_key} ({len(file_data)} bytes)")
+        return s3_url
+
+    except Exception as e:
+        print(f"[Handler] Failed to upload rigged model: {e}")
+        return ""
+
+
+def find_output_files(model_id: str, output_dir: str = "/opt/ComfyUI/output") -> tuple:
+    """
+    Find GLB and FBX output files in the ComfyUI output directory.
+
+    Args:
+        model_id: The model identifier (e.g., avatar_xxx)
+        output_dir: Directory to search for output files
+
+    Returns:
+        Tuple of (glb_path, fbx_path) - paths may be empty if not found
+    """
+    glb_path = ""
+    fbx_path = ""
+
+    if not os.path.exists(output_dir):
+        print(f"[Handler] Output directory not found: {output_dir}")
+        return glb_path, fbx_path
+
+    # Look for files matching the model_id pattern
+    for filename in os.listdir(output_dir):
+        filepath = os.path.join(output_dir, filename)
+        if not os.path.isfile(filepath):
+            continue
+
+        # Match files containing the model_id
+        if model_id in filename:
+            if filename.endswith('.glb'):
+                glb_path = filepath
+                print(f"[Handler] Found GLB: {filepath}")
+            elif filename.endswith('.fbx'):
+                fbx_path = filepath
+                print(f"[Handler] Found FBX: {filepath}")
+
+    # If no exact match, try to find most recent files
+    if not glb_path or not fbx_path:
+        import glob
+        glb_files = sorted(glob.glob(os.path.join(output_dir, "*.glb")), key=os.path.getmtime, reverse=True)
+        fbx_files = sorted(glob.glob(os.path.join(output_dir, "*.fbx")), key=os.path.getmtime, reverse=True)
+
+        if not glb_path and glb_files:
+            glb_path = glb_files[0]
+            print(f"[Handler] Using most recent GLB: {glb_path}")
+        if not fbx_path and fbx_files:
+            fbx_path = fbx_files[0]
+            print(f"[Handler] Using most recent FBX: {fbx_path}")
+
+    return glb_path, fbx_path
+
+
 def upload_clothing_to_s3(local_path: str, user_id: str, garment_id: str) -> str:
     """
     Upload fitted/rigged clothing GLB to S3.
@@ -258,6 +355,36 @@ def handler(job):
                         for node_id in api_response['outputs']:
                             if isinstance(api_response['outputs'][node_id], dict):
                                 api_response['outputs'][node_id].pop('textures_json', None)
+
+            # Handle rig-avatar workflow - upload GLB and FBX to S3
+            is_rig_workflow = "rig-avatar" in endpoint
+            if is_rig_workflow:
+                print(f"[Handler] Processing rig-avatar workflow for model: {model_id}")
+
+                # Find output files in the ComfyUI output directory
+                glb_path, fbx_path = find_output_files(model_id)
+
+                # Upload to S3 and get URLs
+                glb_url = ""
+                fbx_url = ""
+
+                if glb_path:
+                    glb_url = upload_rigged_model_to_s3(glb_path, model_id, "glb")
+                if fbx_path:
+                    fbx_url = upload_rigged_model_to_s3(fbx_path, model_id, "fbx")
+
+                # Update response with S3 URLs
+                if isinstance(api_response, dict):
+                    if 'response' not in api_response:
+                        api_response['response'] = {}
+                    if isinstance(api_response.get('response'), dict):
+                        api_response['response']['glb_output_path'] = glb_url
+                        api_response['response']['fbx_output_path'] = fbx_url
+                    else:
+                        api_response['glb_output_path'] = glb_url
+                        api_response['fbx_output_path'] = fbx_url
+
+                print(f"[Handler] Rig workflow complete - GLB: {glb_url}, FBX: {fbx_url}")
 
             # Handle clothing workflow outputs - upload GLB to S3
             if is_clothing_workflow and isinstance(api_response, dict):
