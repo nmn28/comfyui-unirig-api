@@ -69,9 +69,11 @@ RUN cd custom_nodes/ComfyUI-UniRig && \
 # Install AWS CLI, boto3, and RunPod SDK
 RUN pip install --no-cache-dir awscli boto3 runpod requests
 
-# Install gltf-transform CLI for GLB optimization (mesh decimation + texture resize)
+# Install Node.js and gltf-transform CLI for GLB optimization (mesh decimation + texture resize)
 # Reduces rigged GLBs from ~29MB to ~3MB for mobile delivery
-RUN npm install -g @gltf-transform/cli
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g @gltf-transform/cli
 
 # =============================================================================
 # CLOTHING PIPELINE: cloth-fit + Robust Weight Transfer
