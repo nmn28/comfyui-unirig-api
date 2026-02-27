@@ -11,6 +11,7 @@ import time
 import os
 import json
 import base64
+import subprocess
 import boto3
 from botocore.exceptions import ClientError
 
@@ -213,6 +214,60 @@ def find_output_files(model_id: str, output_dir: str = "/opt/ComfyUI/output") ->
     return glb_path, fbx_path
 
 
+def optimize_glb(input_path: str, output_path: str = None) -> str:
+    """
+    Optimize GLB with mesh decimation, texture resize, and Draco compression.
+    Uses gltf-transform CLI for ~90% file size reduction.
+
+    Args:
+        input_path: Path to input GLB file
+        output_path: Path for optimized output (default: input_optimized.glb)
+
+    Returns:
+        Path to optimized GLB file, or original if optimization fails
+    """
+    if not input_path or not os.path.exists(input_path):
+        return input_path
+
+    if not output_path:
+        output_path = input_path.replace('.glb', '_optimized.glb')
+
+    try:
+        # gltf-transform optimize with:
+        # --simplify: mesh decimation (200k verts -> ~20k)
+        # --simplify-ratio 0.1: keep 10% of vertices
+        # --texture-resize 1024: downscale textures from 4096 to 1024
+        # --compress draco: apply Draco compression
+        cmd = [
+            'gltf-transform', 'optimize',
+            input_path, output_path,
+            '--simplify',
+            '--simplify-ratio', '0.1',
+            '--texture-resize', '1024',
+            '--compress', 'draco',
+        ]
+
+        print(f"[Handler] Optimizing GLB: {input_path}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+        if result.returncode == 0 and os.path.exists(output_path):
+            orig_size = os.path.getsize(input_path)
+            opt_size = os.path.getsize(output_path)
+            reduction = 100 - (opt_size / orig_size * 100)
+            print(f"[Handler] GLB optimized: {orig_size:,} -> {opt_size:,} bytes ({reduction:.0f}% reduction)")
+            return output_path
+        else:
+            print(f"[Handler] GLB optimization failed: {result.stderr}")
+            return input_path  # Fall back to unoptimized
+
+    except subprocess.TimeoutExpired:
+        print(f"[Handler] GLB optimization timed out after 120s")
+        return input_path
+    except Exception as e:
+        print(f"[Handler] GLB optimization error: {e}")
+        return input_path  # Fall back to unoptimized
+
+
 def upload_clothing_to_s3(local_path: str, user_id: str, garment_id: str) -> str:
     """
     Upload fitted/rigged clothing GLB to S3.
@@ -369,20 +424,18 @@ def handler(job):
                 fbx_url = ""
 
                 if glb_path:
-                    glb_url = upload_rigged_model_to_s3(glb_path, model_id, "glb")
+                    # Optimize GLB before upload (mesh decimation + texture resize + Draco)
+                    # Reduces ~29MB -> ~3MB for mobile delivery
+                    optimized_glb = optimize_glb(glb_path)
+                    glb_url = upload_rigged_model_to_s3(optimized_glb, model_id, "glb")
                 if fbx_path:
                     fbx_url = upload_rigged_model_to_s3(fbx_path, model_id, "fbx")
 
                 # Update response with S3 URLs
+                # Set directly on api_response so Go backend finds them at output["response"]["glb_output_path"]
                 if isinstance(api_response, dict):
-                    if 'response' not in api_response:
-                        api_response['response'] = {}
-                    if isinstance(api_response.get('response'), dict):
-                        api_response['response']['glb_output_path'] = glb_url
-                        api_response['response']['fbx_output_path'] = fbx_url
-                    else:
-                        api_response['glb_output_path'] = glb_url
-                        api_response['fbx_output_path'] = fbx_url
+                    api_response['glb_output_path'] = glb_url
+                    api_response['fbx_output_path'] = fbx_url
 
                 print(f"[Handler] Rig workflow complete - GLB: {glb_url}, FBX: {fbx_url}")
 
