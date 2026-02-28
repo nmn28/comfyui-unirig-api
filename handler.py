@@ -12,8 +12,10 @@ import os
 import json
 import base64
 import subprocess
+import shutil
 import boto3
 from botocore.exceptions import ClientError
+from urllib.parse import urlparse
 
 # S3 configuration from environment
 S3_BUCKET = os.environ.get("S3_BUCKET", "endure-media")
@@ -214,88 +216,225 @@ def find_output_files(model_id: str, output_dir: str = "/opt/ComfyUI/output") ->
     return glb_path, fbx_path
 
 
-def optimize_glb(input_path: str, output_path: str = None) -> str:
+def download_mesh_from_url(mesh_url: str, output_dir: str = "/opt/ComfyUI/input") -> str:
     """
-    Optimize GLB with texture resize and Draco compression.
-    Uses gltf-transform CLI for significant file size reduction.
-
-    NOTE: We skip the 'simplify' step because it corrupts skinning data
-    (JOINTS_0/WEIGHTS_0 accessors) on rigged meshes, causing EXC_BAD_ACCESS
-    crashes when loading in GLTFKit2/SceneKit on iOS.
-
-    Pipeline: resize textures (1024x1024) → Draco compress
-    Expected: ~29MB → ~8-10MB (still significant reduction)
+    Download mesh from URL to local file for pre-processing.
 
     Args:
-        input_path: Path to input GLB file
-        output_path: Path for optimized output (default: input_optimized.glb)
+        mesh_url: URL to download mesh from (FAL/S3/etc)
+        output_dir: Directory to save downloaded file
 
     Returns:
-        Path to optimized GLB file, or original if optimization fails
+        Path to downloaded file, or empty string on failure
+    """
+    if not mesh_url:
+        return ""
+
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Extract filename from URL or generate one
+        parsed = urlparse(mesh_url)
+        filename = os.path.basename(parsed.path) or f"mesh_{int(time.time())}.glb"
+        if not filename.endswith('.glb'):
+            filename += '.glb'
+
+        output_path = os.path.join(output_dir, f"downloaded_{filename}")
+
+        print(f"[Handler] Downloading mesh: {mesh_url}")
+        response = requests.get(mesh_url, timeout=120)
+        response.raise_for_status()
+
+        with open(output_path, 'wb') as f:
+            f.write(response.content)
+
+        print(f"[Handler] Downloaded mesh: {output_path} ({len(response.content):,} bytes)")
+        return output_path
+
+    except Exception as e:
+        print(f"[Handler] Failed to download mesh: {e}")
+        return ""
+
+
+def optimize_glb_before_rigging(input_path: str, output_path: str = None) -> str:
+    """
+    PRE-RIGGING optimization: simplify mesh + resize textures.
+
+    Runs BEFORE UniRig on the raw FAL model (no skeleton/skin data).
+    Safe to decimate because there are no JOINTS_0/WEIGHTS_0 to corrupt.
+
+    Pipeline: weld → simplify (15% ratio) → resize textures
+    Expected: 14MB/203k verts → 3-5MB/30k verts
+
+    Args:
+        input_path: Path to raw FAL model GLB
+        output_path: Path to write optimized GLB for UniRig input
+
+    Returns:
+        Path to optimized file (output_path if success, input_path if fallback)
     """
     if not input_path or not os.path.exists(input_path):
         return input_path
 
     if not output_path:
-        output_path = input_path.replace('.glb', '_optimized.glb')
+        output_path = input_path.replace('.glb', '_preopt.glb')
 
-    orig_size = os.path.getsize(input_path)
-    print(f"[Handler] Optimizing GLB: {input_path} ({orig_size:,} bytes)")
-
-    # NOTE: Skipping 'simplify' step - it corrupts JOINTS_0/WEIGHTS_0 on skinned meshes
-    # The mesh decimation remaps vertices but breaks joint/weight accessor alignment,
-    # causing EXC_BAD_ACCESS when SceneKit tries to read past buffer boundaries.
-
-    # Step 1: Resize textures (safe for skinned meshes)
-    temp1 = input_path.replace('.glb', '_resized.glb')
     try:
-        cmd = ['gltf-transform', 'resize', input_path, temp1, '--width', '1024', '--height', '1024']
+        original_size = os.path.getsize(input_path)
+        print(f"[Handler] Pre-rig optimization starting: {input_path} ({original_size:,} bytes)")
+
+        base_dir = os.path.dirname(input_path)
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+
+        # Temp files for intermediate steps
+        temp_welded = os.path.join(base_dir, f"{base_name}_welded.glb")
+        temp_simplified = os.path.join(base_dir, f"{base_name}_simplified.glb")
+
+        # =====================================================================
+        # Step 1: WELD — merge duplicate/near-duplicate vertices
+        # gltf-transform docs: "For best results, apply a weld operation
+        # before simplification."
+        # =====================================================================
+        cmd = ['gltf-transform', 'weld', input_path, temp_welded]
         print(f"[Handler] Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        print(f"[Handler] weld stdout: {result.stdout}")
+        if result.stderr:
+            print(f"[Handler] weld stderr: {result.stderr}")
+
+        if result.returncode != 0 or not os.path.exists(temp_welded):
+            print(f"[Handler] weld failed (rc={result.returncode}), using original")
+            temp_welded = input_path
+
+        # =====================================================================
+        # Step 2: SIMPLIFY — reduce vertex count for mobile
+        # Target ratio 0.15 = keep ~15% of triangles
+        # 203k verts → ~30k verts (good for mobile SceneKit)
+        # SAFE because there's no skin data on the raw FAL model!
+        # =====================================================================
+        cmd = [
+            'gltf-transform', 'simplify',
+            temp_welded, temp_simplified,
+            '--ratio', '0.15',
+            '--error', '0.001'  # Allow up to 0.1% error for quality
+        ]
+        print(f"[Handler] Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        print(f"[Handler] simplify stdout: {result.stdout}")
+        if result.stderr:
+            print(f"[Handler] simplify stderr: {result.stderr}")
+
+        if result.returncode != 0 or not os.path.exists(temp_simplified):
+            print(f"[Handler] simplify failed (rc={result.returncode}), using welded")
+            temp_simplified = temp_welded
+
+        # =====================================================================
+        # Step 3: RESIZE TEXTURES — 4096×4096 → 1024×1024
+        # Huge texture savings with minimal visual loss on mobile screens
+        # =====================================================================
+        cmd = [
+            'gltf-transform', 'resize',
+            temp_simplified, output_path,
+            '--width', '1024',
+            '--height', '1024'
+        ]
+        print(f"[Handler] Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         print(f"[Handler] resize stdout: {result.stdout}")
         if result.stderr:
             print(f"[Handler] resize stderr: {result.stderr}")
-        if result.returncode != 0 or not os.path.exists(temp1):
-            print(f"[Handler] resize failed (code {result.returncode}), using original")
-            temp1 = input_path
-    except Exception as e:
-        print(f"[Handler] resize error: {e}")
-        temp1 = input_path
 
-    # Step 2: Draco compression (safe for skinned meshes)
-    # Use --method sequential to preserve vertex order for JOINTS_0/WEIGHTS_0 alignment
-    # (edgebreaker method reorders vertices which breaks skinning data)
+        if result.returncode != 0 or not os.path.exists(output_path):
+            print(f"[Handler] resize failed (rc={result.returncode}), using simplified")
+            shutil.copy2(temp_simplified, output_path)
+
+        final_size = os.path.getsize(output_path)
+        reduction = (1 - final_size / original_size) * 100 if original_size > 0 else 0
+        print(f"[Handler] Pre-rig optimization done: {original_size:,} -> {final_size:,} bytes ({reduction:.0f}% reduction)")
+
+        # Cleanup temp files
+        for f in [temp_welded, temp_simplified]:
+            if f != input_path and f != output_path and os.path.exists(f):
+                try:
+                    os.remove(f)
+                except:
+                    pass
+
+        return output_path
+
+    except Exception as e:
+        print(f"[Handler] Pre-rig optimization error: {e}")
+        # Fallback: copy original to output path so pipeline continues
+        if input_path != output_path and output_path:
+            shutil.copy2(input_path, output_path)
+            return output_path
+        return input_path
+
+
+def compress_rigged_glb(input_path: str, output_path: str = None) -> str:
+    """
+    POST-RIGGING compression: Draco compress the rigged GLB.
+
+    Runs AFTER UniRig on the rigged model (has JOINTS_0/WEIGHTS_0).
+    Only does Draco compression (no simplify — mesh is already small from pre-opt).
+    Uses --method sequential to preserve vertex order for skinning data.
+
+    Args:
+        input_path: Path to rigged GLB from UniRig/MIA
+        output_path: Path to write compressed GLB
+
+    Returns:
+        Path to compressed file (output_path if success, input_path if fallback)
+    """
+    if not input_path or not os.path.exists(input_path):
+        return input_path
+
+    if not output_path:
+        output_path = input_path.replace('.glb', '_compressed.glb')
+
     try:
-        cmd = ['gltf-transform', 'draco', temp1, output_path, '--method', 'sequential']
+        original_size = os.path.getsize(input_path)
+        print(f"[Handler] Post-rig compression starting: {input_path} ({original_size:,} bytes)")
+
+        # =====================================================================
+        # Draco compress with sequential method (preserves vertex order)
+        # This is safe for skinned meshes because sequential doesn't reorder
+        # vertices, so JOINTS_0/WEIGHTS_0 stay aligned with POSITION
+        # =====================================================================
+        cmd = [
+            'gltf-transform', 'draco',
+            input_path, output_path,
+            '--method', 'sequential'
+        ]
         print(f"[Handler] Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         print(f"[Handler] draco stdout: {result.stdout}")
         if result.stderr:
             print(f"[Handler] draco stderr: {result.stderr}")
+
         if result.returncode != 0 or not os.path.exists(output_path):
-            print(f"[Handler] draco failed (code {result.returncode}), using previous")
-            output_path = temp1
-    except Exception as e:
-        print(f"[Handler] draco error: {e}")
-        output_path = temp1
+            print(f"[Handler] draco failed (rc={result.returncode}), uploading uncompressed")
+            shutil.copy2(input_path, output_path)
+            return output_path
 
-    # Clean up temp files
-    for f in [temp1]:
-        if f != input_path and f != output_path and os.path.exists(f):
-            try:
-                os.remove(f)
-            except:
-                pass
+        final_size = os.path.getsize(output_path)
+        reduction = (1 - final_size / original_size) * 100 if original_size > 0 else 0
+        print(f"[Handler] Post-rig compression done: {original_size:,} -> {final_size:,} bytes ({reduction:.0f}% reduction)")
 
-    # Report results
-    if os.path.exists(output_path) and output_path != input_path:
-        opt_size = os.path.getsize(output_path)
-        reduction = 100 - (opt_size / orig_size * 100)
-        print(f"[Handler] GLB optimized: {orig_size:,} -> {opt_size:,} bytes ({reduction:.0f}% reduction)")
         return output_path
-    else:
-        print(f"[Handler] GLB optimization failed, using original")
+
+    except Exception as e:
+        print(f"[Handler] Post-rig compression error: {e}")
+        if input_path != output_path and output_path:
+            shutil.copy2(input_path, output_path)
+            return output_path
         return input_path
+
+
+# Legacy alias for backwards compatibility (calls new compress function)
+def optimize_glb(input_path: str, output_path: str = None) -> str:
+    """Legacy wrapper - now just does Draco compression on rigged models."""
+    return compress_rigged_glb(input_path, output_path)
 
 
 def upload_clothing_to_s3(local_path: str, user_id: str, garment_id: str) -> str:
@@ -387,6 +526,31 @@ def handler(job):
     # Check if this is a clothing workflow
     is_clothing_workflow = "fit-clothing" in endpoint
 
+    # Check if this is a rig-avatar workflow - needs pre-optimization
+    is_rig_workflow = "rig-avatar" in endpoint
+
+    # =========================================================================
+    # V26 PRE-OPTIMIZATION: Download and optimize mesh BEFORE UniRig
+    # This reduces 203k verts → ~30k verts so UniRig outputs a mobile-friendly mesh
+    # =========================================================================
+    optimized_input_path = None
+    if is_rig_workflow:
+        mesh_url = input_data.get("mesh_url", "")
+        if mesh_url:
+            print(f"[Handler] V26: Pre-optimizing mesh before rigging")
+
+            # Step 1: Download the mesh
+            downloaded_path = download_mesh_from_url(mesh_url)
+            if downloaded_path:
+                # Step 2: Pre-optimize (weld + simplify + resize textures)
+                optimized_input_path = downloaded_path.replace('.glb', '_preopt.glb')
+                optimized_input_path = optimize_glb_before_rigging(downloaded_path, optimized_input_path)
+
+                # Step 3: Replace mesh_url with local file path for ComfyUI
+                # The UniRigLoadMesh node supports local file paths
+                body["input"]["mesh_url"] = optimized_input_path
+                print(f"[Handler] V26: Using pre-optimized mesh: {optimized_input_path}")
+
     # Make request to local comfyui-api
     try:
         url = f"http://localhost:3000{endpoint}"
@@ -442,7 +606,6 @@ def handler(job):
                                 api_response['outputs'][node_id].pop('textures_json', None)
 
             # Handle rig-avatar workflow - upload GLB and FBX to S3
-            is_rig_workflow = "rig-avatar" in endpoint
             if is_rig_workflow:
                 print(f"[Handler] Processing rig-avatar workflow for model: {model_id}")
 
@@ -454,10 +617,18 @@ def handler(job):
                 fbx_url = ""
 
                 if glb_path:
-                    # Optimize GLB before upload (mesh decimation + texture resize + Draco)
-                    # Reduces ~29MB -> ~3MB for mobile delivery
-                    optimized_glb = optimize_glb(glb_path)
-                    glb_url = upload_rigged_model_to_s3(optimized_glb, model_id, "glb")
+                    # V26: Post-rig compression (Draco only, mesh already small from pre-opt)
+                    # The mesh was decimated BEFORE rigging, so no skin data corruption risk
+                    compressed_glb = compress_rigged_glb(glb_path)
+                    glb_url = upload_rigged_model_to_s3(compressed_glb, model_id, "glb")
+
+                    # Cleanup pre-optimized input file if it exists
+                    if optimized_input_path and os.path.exists(optimized_input_path):
+                        try:
+                            os.remove(optimized_input_path)
+                        except:
+                            pass
+
                 if fbx_path:
                     fbx_url = upload_rigged_model_to_s3(fbx_path, model_id, "fbx")
 
@@ -467,7 +638,7 @@ def handler(job):
                     api_response['glb_output_path'] = glb_url
                     api_response['fbx_output_path'] = fbx_url
 
-                print(f"[Handler] Rig workflow complete - GLB: {glb_url}, FBX: {fbx_url}")
+                print(f"[Handler] V26 Rig workflow complete - GLB: {glb_url}, FBX: {fbx_url}")
 
             # Handle clothing workflow outputs - upload GLB to S3
             if is_clothing_workflow and isinstance(api_response, dict):
