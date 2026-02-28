@@ -41,7 +41,7 @@ RUN apt-get update && apt-get install -y \
 # Install ComfyUI-UniRig from our fork (with OUTPUT_NODE fix)
 # Install BOTH requirements files, excluding flash_attn (installed separately below)
 # Cache bust: increment to force re-clone when fork is updated
-ARG UNIRIG_CACHE_BUST=2
+ARG UNIRIG_CACHE_BUST=3
 RUN cd custom_nodes && \
     git clone https://github.com/nmn28/ComfyUI-UniRig.git && \
     cd ComfyUI-UniRig && \
