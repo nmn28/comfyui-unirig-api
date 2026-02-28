@@ -232,40 +232,73 @@ def optimize_glb(input_path: str, output_path: str = None) -> str:
     if not output_path:
         output_path = input_path.replace('.glb', '_optimized.glb')
 
+    orig_size = os.path.getsize(input_path)
+    print(f"[Handler] Optimizing GLB: {input_path} ({orig_size:,} bytes)")
+
+    # Step 1: Simplify mesh (decimate vertices)
+    temp1 = input_path.replace('.glb', '_simplified.glb')
     try:
-        # gltf-transform optimize with:
-        # --simplify: mesh decimation (200k verts -> ~20k)
-        # --simplify-ratio 0.1: keep 10% of vertices
-        # --texture-resize 1024: downscale textures from 4096 to 1024
-        # --compress draco: apply Draco compression
-        cmd = [
-            'gltf-transform', 'optimize',
-            input_path, output_path,
-            '--simplify',
-            '--simplify-ratio', '0.1',
-            '--texture-resize', '1024',
-            '--compress', 'draco',
-        ]
-
-        print(f"[Handler] Optimizing GLB: {input_path}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-
-        if result.returncode == 0 and os.path.exists(output_path):
-            orig_size = os.path.getsize(input_path)
-            opt_size = os.path.getsize(output_path)
-            reduction = 100 - (opt_size / orig_size * 100)
-            print(f"[Handler] GLB optimized: {orig_size:,} -> {opt_size:,} bytes ({reduction:.0f}% reduction)")
-            return output_path
-        else:
-            print(f"[Handler] GLB optimization failed: {result.stderr}")
-            return input_path  # Fall back to unoptimized
-
-    except subprocess.TimeoutExpired:
-        print(f"[Handler] GLB optimization timed out after 120s")
-        return input_path
+        cmd = ['gltf-transform', 'simplify', input_path, temp1, '--ratio', '0.1']
+        print(f"[Handler] Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        print(f"[Handler] simplify stdout: {result.stdout}")
+        if result.stderr:
+            print(f"[Handler] simplify stderr: {result.stderr}")
+        if result.returncode != 0 or not os.path.exists(temp1):
+            print(f"[Handler] simplify failed (code {result.returncode}), using original")
+            temp1 = input_path
     except Exception as e:
-        print(f"[Handler] GLB optimization error: {e}")
-        return input_path  # Fall back to unoptimized
+        print(f"[Handler] simplify error: {e}")
+        temp1 = input_path
+
+    # Step 2: Resize textures
+    temp2 = temp1.replace('.glb', '_resized.glb') if temp1 != input_path else input_path.replace('.glb', '_resized.glb')
+    try:
+        cmd = ['gltf-transform', 'resize', temp1, temp2, '--width', '1024', '--height', '1024']
+        print(f"[Handler] Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        print(f"[Handler] resize stdout: {result.stdout}")
+        if result.stderr:
+            print(f"[Handler] resize stderr: {result.stderr}")
+        if result.returncode != 0 or not os.path.exists(temp2):
+            print(f"[Handler] resize failed (code {result.returncode}), using previous")
+            temp2 = temp1
+    except Exception as e:
+        print(f"[Handler] resize error: {e}")
+        temp2 = temp1
+
+    # Step 3: Draco compression
+    try:
+        cmd = ['gltf-transform', 'draco', temp2, output_path]
+        print(f"[Handler] Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        print(f"[Handler] draco stdout: {result.stdout}")
+        if result.stderr:
+            print(f"[Handler] draco stderr: {result.stderr}")
+        if result.returncode != 0 or not os.path.exists(output_path):
+            print(f"[Handler] draco failed (code {result.returncode}), using previous")
+            output_path = temp2
+    except Exception as e:
+        print(f"[Handler] draco error: {e}")
+        output_path = temp2
+
+    # Clean up temp files
+    for f in [temp1, temp2]:
+        if f != input_path and f != output_path and os.path.exists(f):
+            try:
+                os.remove(f)
+            except:
+                pass
+
+    # Report results
+    if os.path.exists(output_path) and output_path != input_path:
+        opt_size = os.path.getsize(output_path)
+        reduction = 100 - (opt_size / orig_size * 100)
+        print(f"[Handler] GLB optimized: {orig_size:,} -> {opt_size:,} bytes ({reduction:.0f}% reduction)")
+        return output_path
+    else:
+        print(f"[Handler] GLB optimization failed, using original")
+        return input_path
 
 
 def upload_clothing_to_s3(local_path: str, user_id: str, garment_id: str) -> str:
