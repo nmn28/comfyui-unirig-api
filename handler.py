@@ -308,15 +308,17 @@ def optimize_glb_before_rigging(input_path: str, output_path: str = None) -> str
 
         # =====================================================================
         # Step 2: SIMPLIFY — reduce vertex count for mobile
-        # Target ratio 0.15 = keep ~15% of triangles
-        # 203k verts → ~30k verts (good for mobile SceneKit)
+        # Target ratio 0.10 = keep ~10% of triangles
+        # 203k verts → ~20k verts (good for mobile SceneKit)
         # SAFE because there's no skin data on the raw FAL model!
+        # NOTE: --error 1 allows up to 100% geometric error, ensuring we
+        # actually hit the target ratio instead of stopping early
         # =====================================================================
         cmd = [
             'gltf-transform', 'simplify',
             temp_welded, temp_simplified,
-            '--ratio', '0.15',
-            '--error', '0.001'  # Allow up to 0.1% error for quality
+            '--ratio', '0.10',
+            '--error', '1'  # Don't limit by error - hit the target ratio
         ]
         print(f"[Handler] Running: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -373,61 +375,40 @@ def optimize_glb_before_rigging(input_path: str, output_path: str = None) -> str
 
 def compress_rigged_glb(input_path: str, output_path: str = None) -> str:
     """
-    POST-RIGGING compression: Draco compress the rigged GLB.
+    POST-RIGGING: Skip Draco compression for now (testing if Draco is causing crashes).
 
-    Runs AFTER UniRig on the rigged model (has JOINTS_0/WEIGHTS_0).
-    Only does Draco compression (no simplify — mesh is already small from pre-opt).
-    Uses --method sequential to preserve vertex order for skinning data.
+    V27 TEST: Upload rigged GLB WITHOUT Draco to test if SceneKit can load it.
+    If this works, the issue is Draco decoding. If it crashes, the issue is
+    UniRig's skinning data.
 
     Args:
         input_path: Path to rigged GLB from UniRig/MIA
-        output_path: Path to write compressed GLB
+        output_path: Path to write GLB
 
     Returns:
-        Path to compressed file (output_path if success, input_path if fallback)
+        Path to output file
     """
     if not input_path or not os.path.exists(input_path):
         return input_path
 
     if not output_path:
-        output_path = input_path.replace('.glb', '_compressed.glb')
+        output_path = input_path.replace('.glb', '_final.glb')
 
     try:
         original_size = os.path.getsize(input_path)
-        print(f"[Handler] Post-rig compression starting: {input_path} ({original_size:,} bytes)")
+        print(f"[Handler] V27 TEST: Skipping Draco compression to isolate crash cause")
+        print(f"[Handler] Input: {input_path} ({original_size:,} bytes)")
 
-        # =====================================================================
-        # Draco compress with sequential method (preserves vertex order)
-        # This is safe for skinned meshes because sequential doesn't reorder
-        # vertices, so JOINTS_0/WEIGHTS_0 stay aligned with POSITION
-        # =====================================================================
-        cmd = [
-            'gltf-transform', 'draco',
-            input_path, output_path,
-            '--method', 'sequential'
-        ]
-        print(f"[Handler] Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        print(f"[Handler] draco stdout: {result.stdout}")
-        if result.stderr:
-            print(f"[Handler] draco stderr: {result.stderr}")
-
-        if result.returncode != 0 or not os.path.exists(output_path):
-            print(f"[Handler] draco failed (rc={result.returncode}), uploading uncompressed")
-            shutil.copy2(input_path, output_path)
-            return output_path
+        # Just copy the file without Draco compression
+        shutil.copy2(input_path, output_path)
 
         final_size = os.path.getsize(output_path)
-        reduction = (1 - final_size / original_size) * 100 if original_size > 0 else 0
-        print(f"[Handler] Post-rig compression done: {original_size:,} -> {final_size:,} bytes ({reduction:.0f}% reduction)")
+        print(f"[Handler] Output (no Draco): {output_path} ({final_size:,} bytes)")
 
         return output_path
 
     except Exception as e:
-        print(f"[Handler] Post-rig compression error: {e}")
-        if input_path != output_path and output_path:
-            shutil.copy2(input_path, output_path)
-            return output_path
+        print(f"[Handler] Error: {e}")
         return input_path
 
 
