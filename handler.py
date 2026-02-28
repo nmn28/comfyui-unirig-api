@@ -216,8 +216,15 @@ def find_output_files(model_id: str, output_dir: str = "/opt/ComfyUI/output") ->
 
 def optimize_glb(input_path: str, output_path: str = None) -> str:
     """
-    Optimize GLB with mesh decimation, texture resize, and Draco compression.
-    Uses gltf-transform CLI for ~90% file size reduction.
+    Optimize GLB with texture resize and Draco compression.
+    Uses gltf-transform CLI for significant file size reduction.
+
+    NOTE: We skip the 'simplify' step because it corrupts skinning data
+    (JOINTS_0/WEIGHTS_0 accessors) on rigged meshes, causing EXC_BAD_ACCESS
+    crashes when loading in GLTFKit2/SceneKit on iOS.
+
+    Pipeline: resize textures (1024x1024) → Draco compress
+    Expected: ~29MB → ~8-10MB (still significant reduction)
 
     Args:
         input_path: Path to input GLB file
@@ -235,41 +242,31 @@ def optimize_glb(input_path: str, output_path: str = None) -> str:
     orig_size = os.path.getsize(input_path)
     print(f"[Handler] Optimizing GLB: {input_path} ({orig_size:,} bytes)")
 
-    # Step 1: Simplify mesh (decimate vertices)
-    temp1 = input_path.replace('.glb', '_simplified.glb')
-    try:
-        cmd = ['gltf-transform', 'simplify', input_path, temp1, '--ratio', '0.1']
-        print(f"[Handler] Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        print(f"[Handler] simplify stdout: {result.stdout}")
-        if result.stderr:
-            print(f"[Handler] simplify stderr: {result.stderr}")
-        if result.returncode != 0 or not os.path.exists(temp1):
-            print(f"[Handler] simplify failed (code {result.returncode}), using original")
-            temp1 = input_path
-    except Exception as e:
-        print(f"[Handler] simplify error: {e}")
-        temp1 = input_path
+    # NOTE: Skipping 'simplify' step - it corrupts JOINTS_0/WEIGHTS_0 on skinned meshes
+    # The mesh decimation remaps vertices but breaks joint/weight accessor alignment,
+    # causing EXC_BAD_ACCESS when SceneKit tries to read past buffer boundaries.
 
-    # Step 2: Resize textures
-    temp2 = temp1.replace('.glb', '_resized.glb') if temp1 != input_path else input_path.replace('.glb', '_resized.glb')
+    # Step 1: Resize textures (safe for skinned meshes)
+    temp1 = input_path.replace('.glb', '_resized.glb')
     try:
-        cmd = ['gltf-transform', 'resize', temp1, temp2, '--width', '1024', '--height', '1024']
+        cmd = ['gltf-transform', 'resize', input_path, temp1, '--width', '1024', '--height', '1024']
         print(f"[Handler] Running: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         print(f"[Handler] resize stdout: {result.stdout}")
         if result.stderr:
             print(f"[Handler] resize stderr: {result.stderr}")
-        if result.returncode != 0 or not os.path.exists(temp2):
-            print(f"[Handler] resize failed (code {result.returncode}), using previous")
-            temp2 = temp1
+        if result.returncode != 0 or not os.path.exists(temp1):
+            print(f"[Handler] resize failed (code {result.returncode}), using original")
+            temp1 = input_path
     except Exception as e:
         print(f"[Handler] resize error: {e}")
-        temp2 = temp1
+        temp1 = input_path
 
-    # Step 3: Draco compression
+    # Step 2: Draco compression (safe for skinned meshes)
+    # Use --method sequential to preserve vertex order for JOINTS_0/WEIGHTS_0 alignment
+    # (edgebreaker method reorders vertices which breaks skinning data)
     try:
-        cmd = ['gltf-transform', 'draco', temp2, output_path]
+        cmd = ['gltf-transform', 'draco', temp1, output_path, '--method', 'sequential']
         print(f"[Handler] Running: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         print(f"[Handler] draco stdout: {result.stdout}")
@@ -277,13 +274,13 @@ def optimize_glb(input_path: str, output_path: str = None) -> str:
             print(f"[Handler] draco stderr: {result.stderr}")
         if result.returncode != 0 or not os.path.exists(output_path):
             print(f"[Handler] draco failed (code {result.returncode}), using previous")
-            output_path = temp2
+            output_path = temp1
     except Exception as e:
         print(f"[Handler] draco error: {e}")
-        output_path = temp2
+        output_path = temp1
 
     # Clean up temp files
-    for f in [temp1, temp2]:
+    for f in [temp1]:
         if f != input_path and f != output_path and os.path.exists(f):
             try:
                 os.remove(f)
